@@ -18,15 +18,6 @@ spec:RegisterGear( "tier8", 46260, 46262, 46265, 46267, 46269, 46158, 46161, 461
 spec:RegisterGear( "tier9", 48799, 48800, 48801, 48802, 48803, 48212, 48211, 48210, 48209, 48208 )
 spec:RegisterGear( "tier10", 51140, 51142, 51143, 51144, 51141, 51299, 51297, 51296, 51295, 51298 )
 
-local function rage_amount()
-    local d = UnitDamage( "player" ) * 0.7
-    local c = ( state.level > 70 and 1.4139 or 1 ) * ( 0.0091107836 * ( state.level ^ 2 ) + 3.225598133 * state.level + 4.2652911 )
-    local f = 3.5
-    local s = 2.5
-
-    return min( ( 15 * d ) / ( 4 * c ) + ( f * s * 0.5 ), 15 * d / c )
-end
-
 -- Glyph of Shred helper
 local tracked_rips = {}
 Hekili.TR = tracked_rips;
@@ -176,6 +167,14 @@ spec:RegisterStateFunction("set_last_finisher_cp", function(val)
 end)
 
 local predatorsswiftness_spell_assigned = false
+local rip_cp = 5 -- TODO: Implement rip CP toggle
+local bite_cp = 5 -- TODO: Implement bite CP toggle
+local use_rake = true -- TODO: Implement rake toggle
+local ready_to_shift = false
+local ready_to_gift = false
+local do_gift_of_the_wild = false
+local do_cat_form = false
+local do_bear_form = false
 spec:RegisterHook( "reset_precast", function()
     rip_tracker:reset()
     set_last_finisher_cp(LastFinisherCp)
@@ -191,7 +190,95 @@ spec:RegisterHook( "reset_precast", function()
         predatorsswiftness_spell_assigned = true
     end
 
+    -- Reset NerdDruid vars
+    
 end )
+
+spec:RegisterStateFunction("init_rotation", function()
+    ready_to_shift = false
+    ready_to_gift = false
+    do_gift_of_the_wild = false
+    do_cat_form = false
+    do_bear_form = false
+end)
+
+spec:RegisterStateExpr("execute_rotation", function()
+    init_rotation()
+
+    if ready_to_gift then
+        do_gift_of_the_wild = true
+        return
+    end
+
+    if ready_to_shift then
+        do_cat_form, do_bear_form = player_shift(query_time, false)
+        return
+    end
+
+    local end_thresh = 10
+    local rip_now = (
+        combo_points.current >= rip_cp and debuff.rip.down 
+        and target.time_to_die >= end_thresh
+        and buff.clearcasting.down
+    )
+    local bite_at_end = (
+        combo_points.current >= bite_cp
+        and (
+            target.time_to_die < end_thresh or (
+                debuff.rip.up and
+                target.time_to_die - debuff.rip.remains < end_thresh
+            )
+        )
+    )
+    local mangle_now = (
+        not rip_now and debuff.mangle.down
+    )
+    local bite_before_rip = (
+        combo_points.current >= bite_cp and debuff.rip.up and buff.savage_roar.up
+            and ferociousbite_enabled and can_bite(query_time)
+    )
+    local bite_now = (
+        (bite_before_rip or bite_at_end) and buff.clearcasting.down
+    )
+    if bite_now and buff.berserk.up then
+        bite_now = energy.current <= max_bite_energy
+    end
+    local rake_now = (
+        use_rake and debuff.rake.down
+        and target.time_to_die > 9
+        and buff.clearcasting.down
+    )
+    if rake_now then
+        local arp = 
+        rake_now = rake_dpe > shred_dpe
+    end
+end)
+
+spec:RegisterStateFunction("player_shift", function(time, powershift)
+    local rtn_cat_form = powershift and buff.cat_form.up or not powershift and buff.dire_bear_form.up
+    local rtn_bear_form = powershift and buff.dire_bear_form.up or not powershift and buff.cat_form.up
+    return rtn_cat_form, rtn_bear_form
+end)
+
+spec:RegisterStateFunction("can_bite", function(time)
+    return debuff.rip.remains >= min_bite_rip_remains and buff.savage_roar.remains >= min_bite_sr_remains
+end)
+
+spec:RegisterStateFunction("calc_crit_multiplier", function()
+
+end)
+
+spec:RegisterStateExpr("do_gift_of_the_wild", function()
+    return do_gift_of_the_wild
+end)
+
+spec:RegisterStateExpr("do_cat_form", function()
+    return do_cat_form
+end)
+
+spec:RegisterStateExpr("do_bear_form", function()
+    return do_bear_form
+end)
 
 spec:RegisterStateExpr("rip_maxremains", function()
     if debuff.rip.remains == 0 then
@@ -201,6 +288,20 @@ spec:RegisterStateExpr("rip_maxremains", function()
     end
 end)
 
+-- APL expressions
+spec:RegisterStateExpr( "furor_cap", function()
+    return min(20 * talent.furor.rank, 85)
+end)
+
+spec:RegisterStateExpr( "flowerweaving_energy", function()
+    return min(furor_cap, 75) - 10 * action.gift_of_the_wild.gcd - 20 * latency
+end)
+
+spec:RegisterStateExpr( "ready_to_gift", function()
+    return ready_to_gift
+end)
+
+-- Settings
 spec:RegisterStateExpr( "mainhand_remains", function()
     local next_swing, real_swing, pseudo_swing = 0, 0, 0
     if now == query_time then
@@ -215,40 +316,6 @@ spec:RegisterStateExpr( "mainhand_remains", function()
         next_swing = pseudo_swing
     end
     return next_swing
-end)
-
-spec:RegisterStateExpr("bearweaving_lacerate_should_maul", function()
-    if buff.clearcasting.up then
-        return false
-    end
-
-    local bearRipRemains = max(debuff.rip.remains - 3, 0)
-    local ripGCDs = floor(bearRipRemains / gcd.max)
-    local energyGCDs = floor(energy.time_to_70 / gcd.max)
-    local gcdsRemaining = min(ripGCDs, energyGCDs)
-
-    local rageNeeded = action.maul.spend
-    if gcdsRemaining == 0 then
-        rageNeeded = rageNeeded + (debuff.lacerate.remains < 9 and action.lacerate.spend or 0)
-    else
-        local gcdPool = gcdsRemaining
-        local laceratesNeeded = (debuff.lacerate.max_stack - debuff.lacerate.stack) + (debuff.lacerate.stack == 5 and debuff.lacerate.remains < 9 and 1 or 0)
-        local laceratesUsed = min(gcdPool, laceratesNeeded)
-        rageNeeded = rageNeeded + laceratesUsed * action.lacerate.spend
-        gcdPool = gcdPool - laceratesUsed
-
-        if gcdPool > 0 and cooldown.mangle_bear.up then
-            rageNeeded = rageNeeded + action.mangle_bear.spend
-            gcdPool = gcdPool - 1
-        end
-    end
-
-    local nextSwing = mainhand_remains
-    --[[if nextSwing <= 0 then
-        nextSwing = mainhand_speed
-    end]]--
-    local willMaul = nextSwing <= min(bearRipRemains + 1.5, energy.time_to_85)
-    return willMaul and energy.current < 70 and rage.current > rageNeeded
 end)
 
 spec:RegisterStateExpr("min_roar_offset", function()
@@ -300,6 +367,15 @@ spec:RegisterStateExpr("predatorsswiftness_enabled", function()
 end)
 
 -- Resources
+local function rage_amount()
+    local d = UnitDamage( "player" ) * 0.7
+    local c = ( state.level > 70 and 1.4139 or 1 ) * ( 0.0091107836 * ( state.level ^ 2 ) + 3.225598133 * state.level + 4.2652911 )
+    local f = 3.5
+    local s = 2.5
+
+    return min( ( 15 * d ) / ( 4 * c ) + ( f * s * 0.5 ), 15 * d / c )
+end
+
 spec:RegisterResource( Enum.PowerType.Rage, {
     enrage = {
         aura = "enrage",

@@ -219,36 +219,179 @@ end)
 
 spec:RegisterStateExpr("bearweaving_lacerate_should_maul", function()
     if buff.clearcasting.up then
+        Hekili:Debug("bearweaving_lacerate_should_maul()[false] Clearcasting buff is up: buff.clearcasting.up["..tostring(buff.clearcasting.up).."] == true")
         return false
     end
 
-    local bearRipRemains = max(debuff.rip.remains - 3, 0)
-    local ripGCDs = floor(bearRipRemains / gcd.max)
-    local energyGCDs = floor(energy.time_to_70 / gcd.max)
-    local gcdsRemaining = min(ripGCDs, energyGCDs)
+    if buff.maul.up then
+        Hekili:Debug("bearweaving_lacerate_should_maul()[false] Maul is already up: buff.maul.up["..tostring(buff.maul.up).."] == true")
+        return false
+    end
 
+    local hardSwapRemains = max(min(max(debuff.rip.remains - 3, 0), energy.time_to_75), 0)
+    if hardSwapRemains <= 0 then
+        Hekili:Debug("bearweaving_lacerate_should_maul()[false] Encountered hard-swap cutoff: hardSwapRemains["..tostring(hardSwapRemains).."] <= 0")
+        Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_75["..tostring(energy.time_to_75).."]),0)["..tostring(hardSwapRemains).."]")
+        return false
+    end
+
+    local laceratesNeeded = (debuff.lacerate.max_stack - debuff.lacerate.stack) + (debuff.lacerate.stack == 5 and debuff.lacerate.remains < 9 and 1 or 0)
+    local laceratesUsed = min(gcdsRemain, laceratesNeeded)
+    local timeRemaining = hardSwapRemains
     local rageNeeded = action.maul.spend
-    if gcdsRemaining == 0 then
-        rageNeeded = rageNeeded + (debuff.lacerate.remains < 9 and action.lacerate.spend or 0)
-    else
-        local gcdPool = gcdsRemaining
-        local laceratesNeeded = (debuff.lacerate.max_stack - debuff.lacerate.stack) + (debuff.lacerate.stack == 5 and debuff.lacerate.remains < 9 and 1 or 0)
-        local laceratesUsed = min(gcdPool, laceratesNeeded)
-        rageNeeded = rageNeeded + laceratesUsed * action.lacerate.spend
-        gcdPool = gcdPool - laceratesUsed
 
-        if gcdPool > 0 and cooldown.mangle_bear.up then
-            rageNeeded = rageNeeded + action.mangle_bear.spend
-            gcdPool = gcdPool - 1
+    rageNeeded = rageNeeded + laceratesUsed * action.lacerate.spend
+    timeRemaining = timeRemaining - laceratesUsed * (action.lacerate.gcd + latency)
+    if timeRemaining > 0 and gcdsAfterMangleCD > 0 then
+        rageNeeded = rageNeeded + action.mangle_bear.spend
+        timeRemaining = timeRemaining - (action.mangle_bear.gcd + latency)
+    end
+
+    local willMaul = mainhand_remains <= hardSwapRemains
+    local rtn = willMaul and rage.current > rageNeeded
+    Hekili:Debug("bearweaving_lacerate_should_maul()["..tostring(rtn).."] Default calculation: willMaul["..tostring(willMaul).."] == true and rage.current["..tostring(rage.current).."] > rageNeeded["..tostring(rageNeeded).."]")
+    Hekili:Debug(" - willMaul=mainhand_remains["..tostring(mainhand_remains).."] <= hardSwapRemains["..tostring(hardSwapRemains).."]")
+    Hekili:Debug(" - laceratesNeeded=(debuff.lacerate.max_stack["..tostring(debuff.lacerate.max_stack).."] - debuff.lacerate.stack["..tostring(debuff.lacerate.stack).."]) + (debuff.lacerate.stack["..tostring(debuff.lacerate.stack).."] == 5 and debuff.lacerate.remains["..tostring(debuff.lacerate.remains).."] < 9 and 1 or 0)")
+    Hekili:Debug(" - laceratesUsed=min(gcdsRemain["..gcdsRemain.."], laceratesNeeded["..laceratesNeeded.."])["..laceratesUsed.."]")
+    Hekili:Debug(" - gcdsAfterMangleCD=remainsAfterMangleCD["..tostring(remainsAfterMangleCD).."] / gcd.max["..tostring(gcd.max).."]")
+    Hekili:Debug(" - remainsAfterMangleCD=max(hardSwapRemains["..tostring(hardSwapRemains).."] - cooldown.mangle_bear.remains["..tostring(cooldown.mangle_bear.remains).."], 0)["..tostring(remainsAfterMangleCD).."]")
+    Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_75["..tostring(energy.time_to_75).."]),0)["..tostring(hardSwapRemains).."]")
+    return rtn
+end)
+
+spec:RegisterStateExpr("bearweaving_lacerate_should_cat", function()
+    -- Non-GCD dependent conditions
+    local hardSwapRemains = max(min(max(debuff.rip.remains - 3, 0), energy.time_to_70), 0)
+    local lacerateOk = debuff.lacerate.stack == 5 and debuff.lacerate.remains >= 9
+    do
+        -- Don't cat if we need to refresh lacerate
+        if debuff.lacerate.stack == 5 and debuff.lacerate.remains < 9 then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[false] Lacerate needs refreshing: debuff.lacerate.stack["..tostring(debuff.lacerate.stack).."] & debuff.lacerate.remains["..tostring(debuff.lacerate.remains).."]")
+            return false
+        end
+
+        -- Cat if we have no time left before hard swap
+        if hardSwapRemains == 0 then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] Encountered hard-swap cutoff: hardSwapRemains["..tostring(hardSwapRemains).."] = 0")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return true
+        end
+
+        -- Cat if lacerate is OK and berserk is up
+        if lacerateOk and buff.berserk.up then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] Lacerate is OK and berserk buff is up: lacerateOk["..tostring(lacerateOk).."] = true & buff.berserk.up["..tostring(buff.berserk.up).."] = true")
+            Hekili:Debug(" - lacerateOk=(debuff.lacerate.stack["..tostring(debuff.lacerate.stack).."] == 5 and debuff.lacerate.remains["..tostring(debuff.lacerate.remains).."] >= 9)["..tostring(lacerateOk).."]")
+            return true
+        end
+
+        -- Cat if lacerate is OK and clearcasting is up
+        if lacerateOk and buff.clearcasting.up then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] Lacerate is OK and clearcasting buff is up: lacerateOk["..tostring(lacerateOk).."] = true & buff.clearcasting.up["..tostring(buff.clearcasting.up).."] = true")
+            Hekili:Debug(" - lacerateOk=(debuff.lacerate.stack["..tostring(debuff.lacerate.stack).."] == 5 and debuff.lacerate.remains["..tostring(debuff.lacerate.remains).."] >= 9)["..tostring(lacerateOk).."]")
+            return true
         end
     end
 
-    local nextSwing = mainhand_remains
-    --[[if nextSwing <= 0 then
-        nextSwing = mainhand_speed
-    end]]--
-    local willMaul = nextSwing <= min(bearRipRemains + 1.5, energy.time_to_85)
-    return willMaul and energy.current < 70 and rage.current > rageNeeded
+    -- GCD dependent conditions
+    local gcdsRemain = hardSwapRemains / gcd.max
+    do
+        -- Cat if we have no more GCDs
+        if gcdsRemain == 0 then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] No GCDs remain for follow-up actions: gcdsRemain["..tostring(gcdsRemain).."] == 0")
+            Hekili:Debug(" - gcdsRemain=hardSwapRemains["..tostring(hardSwapRemains).."] / gcd.max["..tostring(gcd.max).."]")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return true
+        end
+
+        -- Don't cat if we need lacerate stacks and we have the rage
+        if not lacerateOk and rage.current >= action.lacerate.spend then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[false] Lacerate is not OK and we have enough rage: lacerateOk["..tostring(lacerateOk).."] = false and rage.current["..tostring(rage.current).."] >= action.lacerate.spend["..tostring(action.lacerate.spend).."]")
+            Hekili:Debug(" - lacerateOk=(debuff.lacerate.stack["..tostring(debuff.lacerate.stack).."] == 5 and debuff.lacerate.remains["..tostring(debuff.lacerate.remains).."] >= 9)["..tostring(lacerateOk).."]")
+            return false
+        end
+    end
+
+    -- Cooldown dependent conditions
+    local remainsAfterMangleCD = max(hardSwapRemains - cooldown.mangle_bear.remains, 0)
+    local gcdsAfterMangleCD = remainsAfterMangleCD / gcd.max
+    do
+        -- Don't cat if we can use mangle on CD
+        if gcdsAfterMangleCD > 0 and rage.current >= action.mangle_bear.spend then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[false] Can use mangle: gcdsAfterMangleCD["..tostring(gcdsAfterMangleCD).."] > 0 and rage.current["..tostring(rage.current).."] >= action.mangle_bear.spend["..tostring(action.mangle_bear.spend).."]")
+            Hekili:Debug(" - gcdsAfterMangleCD=remainsAfterMangleCD["..tostring(remainsAfterMangleCD).."] / gcd.max["..tostring(gcd.max).."]")
+            Hekili:Debug(" - remainsAfterMangleCD=max(hardSwapRemains["..tostring(hardSwapRemains).."] - cooldown.mangle_bear.remains["..tostring(cooldown.mangle_bear.remains).."], 0)["..tostring(remainsAfterMangleCD).."]")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return false
+        end
+    end
+
+    -- Swing dependent conditions
+    do
+        -- Cat if swing won't hit before hard swap
+        if mainhand_remains > hardSwapRemains then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] Swing won't hit before hard-swap cutoff: mainhand_remains["..tostring(mainhand_remains).."] > hardSwapRemains["..tostring(hardSwapRemains).."]")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return true
+        end
+
+        -- Don't cat if maul will hit
+        if buff.maul.up and mainhand_remains <= hardSwapRemains then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[false] Maul will hit: buff.maul.up["..tostring(buff.maul.up).."] = true and mainhand_remains["..tostring(mainhand_remains).."] <= hardSwapRemains["..tostring(hardSwapRemains).."]")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return false
+        end
+    end
+
+    -- GCD + swing dependent conditions
+    local remainsAfterSwing = max(hardSwapRemains - mainhand_remains, 0)
+    local gcdsAfterSwing = remainsAfterSwing / gcd.max
+    local remainsAfterMangleAndSwing = min(remainsAfterSwing, remainsAfterMangleCD)
+    local gcdsAfterMangleAndSwing = remainsAfterMangleAndSwing / gcd.max
+    local willGainRage = not buff.maul.up
+    do
+        -- Cat if we have no GCDs left after swing
+        if gcdsAfterSwing <= 0 then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[false] No GCDs remain after the next swing: gcdsAfterSwing["..tostring(gcdsAfterSwing).."] <= 0")
+            Hekili:Debug(" - gcdsAfterSwing=remainsAfterSwing["..tostring(remainsAfterSwing).."] / gcd.max["..tostring(gcd.max).."]")
+            Hekili:Debug(" - remainsAfterSwing=max(hardSwapRemains["..tostring(hardSwapRemains).."] - mainhand_remains["..tostring(mainhand_remains).."], 0)["..tostring(remainsAfterSwing).."]")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return false;
+        end
+
+        -- Cat if we will not gain rage from our swing
+        if not willGainRage and gcdsAfterSwing == 1 then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] Only 1 GCD remains after swing and no rage will be gained: willGainRage["..tostring(willGainRage).."] == false and gcdsAfterSwing["..tostring(gcdsAfterSwing).."] == 1")
+            Hekili:Debug(" - willGainRage=buff.maul.up["..tostring(willGainRage).."] == false")
+            Hekili:Debug(" - gcdsAfterSwing=remainsAfterSwing["..tostring(remainsAfterSwing).."] / gcd.max["..tostring(gcd.max).."]")
+            Hekili:Debug(" - remainsAfterSwing=max(hardSwapRemains["..tostring(hardSwapRemains).."] - mainhand_remains["..tostring(mainhand_remains).."], 0)["..tostring(remainsAfterSwing).."]")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return true
+        end
+
+        -- Delay if we need lacerate stacks and we will have the rage in the future
+        if willGainRage and not lacerateOk then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] Lacerate is needed and we will have rage after a swing: willGainRage["..tostring(willGainRage).."] == true and lacerateOk["..tostring(lacerateOk).."] == false")
+            Hekili:Debug(" - willGainRage=buff.maul.up["..tostring(willGainRage).."] == false")
+            Hekili:Debug(" - lacerateOk=(debuff.lacerate.stack["..tostring(debuff.lacerate.stack).."] == 5 and debuff.lacerate.remains["..tostring(debuff.lacerate.remains).."] >= 9)["..tostring(lacerateOk).."]")
+            return true
+        end
+
+        -- Delay if mangle is available after swing
+        if willGainRage and gcdsAfterMangleAndSwing > 0 then
+            Hekili:Debug("bearweaving_lacerate_should_cat()[true] Mangle will be available after cooldown and swing: willGainRage["..tostring(willGainRage).."] and gcdsAfterMangleAndSwing["..tostring(gcdsAfterMangleAndSwing).."] > 0")
+            Hekili:Debug(" - willGainRage=buff.maul.up["..tostring(willGainRage).."] == false")
+            Hekili:Debug(" - gcdsAfterMangleAndSwing=remainsAfterMangleAndSwing["..tostring(remainsAfterMangleAndSwing).."] / gcd.max["..tostring(gcd.max).."]")
+            Hekili:Debug(" - remainsAfterMangleAndSwing=min(remainsAfterSwing["..tostring(remainsAfterSwing).."], remainsAfterMangleCD["..tostring(remainsAfterMangleCD).."])["..tostring(remainsAfterMangleAndSwing).."]")
+            Hekili:Debug(" - remainsAfterMangleCD=max(hardSwapRemains["..tostring(hardSwapRemains).."] - cooldown.mangle_bear.remains["..tostring(cooldown.mangle_bear.remains).."], 0)["..tostring(remainsAfterMangleCD).."]")
+            Hekili:Debug(" - remainsAfterSwing=max(hardSwapRemains["..tostring(hardSwapRemains).."] - mainhand_remains["..tostring(mainhand_remains).."], 0)["..tostring(remainsAfterSwing).."]")
+            Hekili:Debug(" - hardSwapRemains=max(min(max(debuff.rip.remains["..tostring(debuff.rip.remains).."]-3,0), energy.time_to_70["..tostring(energy.time_to_70).."]),0)["..tostring(hardSwapRemains).."]")
+            return true
+        end
+
+        -- Default go cat if no decision can be made
+        Hekili:Debug("bearweaving_lacerate_should_cat()[true] No delay conditions exist")
+        return true
+    end
 end)
 
 spec:RegisterStateExpr("min_roar_offset", function()
@@ -1739,7 +1882,7 @@ spec:RegisterAbilities( {
         readyTime = function() return buff.maul.expires end,
 
         handler = function( rank )
-            gain( (buff.clearcasting.up and 0) or ((15 - talent.ferocity.rank) * ((buff.berserk.up and 0.5) or 1)), "rage" )
+            gain( action.maul.spend, "rage" )
             start_maul()
         end,
 

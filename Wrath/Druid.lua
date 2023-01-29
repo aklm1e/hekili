@@ -249,9 +249,32 @@ spec:RegisterStateExpr("execute_rotation", function()
         and buff.clearcasting.down
     )
     if rake_now then
-        local arp = 
-        rake_now = rake_dpe > shred_dpe
+        local _, _, should_rake = calculate_ability_dpe()
+        rake_now = set_bonus.tier9_2pc == 0 and set_bonus.tier10_4pc == 0 and should_rake
     end
+
+    local berserk_dur = 15 + 5 * (glyph.berserk.enabled and 1 or 0)
+    local wait_for_tf = (
+        cooldown.tigers_fury.remains <= berserk_dur and
+        cooldown.tigers_fury.remains + 1 < target.time_to_die - berserk_dur
+    )
+    local berserk_now = (
+        cooldown.berserk.up and not wait_for_tf
+    )
+
+    -- TODO: Berserk tracker
+end)
+
+spec:RegisterStateFunction("calculate_ability_dpe", function()
+    local armor_pen = stat.armor_pen_rating
+    local att_power = stat.attack_power
+    local crit_pct = stat.crit / 100
+    local boss_armor = 10643*(1-0.05*(debuff.armor_reduction.up and 1 or 0))*(1-0.2*(debuff.major_armor_reduction.up and 1 or 0))*(1-0.2*(debuff.shattering_throw.up and 1 or 0))
+    local tigers_fury = buff.tigers_fury.up and 80 or 0
+    local shred_idol = set_bonus.idol_of_the_ravenous_beast == 1 and 203 or 0
+    local rake_dpe = 3*(358 + 6*att_power/100)/35
+    local shred_dpe = ((54.5 + tigers_fury + att_power/14)*2.25 + 666 + shred_idol - 42/35*(att_power/100 + 176))*(1 + 1.266*crit_pct)*(1 - (boss_armor*(1 - armor_pen/1399))/((boss_armor*(1 - armor_pen/1399)) + 15232.5))/42
+    return rake_dpe, shred_dpe, rake_dpe >= shred_dpe
 end)
 
 spec:RegisterStateFunction("player_shift", function(time, powershift)

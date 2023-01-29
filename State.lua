@@ -2309,8 +2309,8 @@ local mt_stat = {
         elseif k == "haste_rating" then
             t[k] = GetCombatRating(CR_HASTE_MELEE)
 
-        elseif k == "armor_penetration" then
-            t[k] = GetArmorPenetration()
+        elseif k == "armor_pen_rating" then
+            t[k] = GetCombatRating(CR_ARMOR_PENETRATION)
 
         elseif k == "weapon_dps" or k == "weapon_offhand_dps" then
             local low, high, offlow, offhigh = UnitDamage( "player" )
@@ -2364,7 +2364,8 @@ local mt_stat = {
             t[k] = 0
 
         elseif k == "crit" then
-            t[k] = ( max( GetCritChance(), GetSpellCritChance( "player" ), GetRangedCritChance() ) + ( t.mod_crit_pct or 0 ) )
+            -- TODO: Move / Remove GetSpellCritChance(school) instead of arbitrarily assigning Fire as the school to inspect
+            t[k] = ( max( GetCritChance(), Hekili.IsWrath() and GetSpellCritChance( 3 ) or GetSpellCritChance( "player" ), GetRangedCritChance() ) + ( t.mod_crit_pct or 0 ) )
 
         end
 

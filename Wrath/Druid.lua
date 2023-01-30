@@ -179,11 +179,16 @@ local predatorsswiftness_spell_assigned = false
 local rip_cp = 5 -- TODO: Implement rip CP toggle
 local bite_cp = 5 -- TODO: Implement bite CP toggle
 local use_rake = true -- TODO: Implement rake toggle
+local powerbear_enabled = true -- TODO: Implement powerbear toggle
+local lacerate_time = 8 -- TODO: Implement lacerate toggle
+local swingresetoptimization_enabled = true -- TODO: Implement toggle
 local ready_to_shift = false
 local ready_to_gift = false
 local do_gift_of_the_wild = false
 local do_cat_form = false
 local do_bear_form = false
+local do_lacerate = false
+local do_mangle_bear = false
 spec:RegisterHook( "reset_precast", function()
     rip_tracker:reset()
     set_last_finisher_cp(LastFinisherCp)
@@ -211,6 +216,7 @@ spec:RegisterStateFunction("init_rotation", function()
     do_gift_of_the_wild = false
     do_cat_form = false
     do_bear_form = false
+    do_lacerate = false
 end)
 
 spec:RegisterStateExpr("execute_rotation", function()
@@ -341,7 +347,7 @@ spec:RegisterStateExpr("execute_rotation", function()
     if bearweave_now then
         local energy_to_dump = energy.current + (weave_end - query_time) * 10
         bearweave_now = (
-            weave_end + energy_to_dump / 42 < target.time_to_die
+            floor(weave_end + energy_to_dump / 42) < target.time_to_die
         )
     end
 
@@ -365,7 +371,7 @@ spec:RegisterStateExpr("execute_rotation", function()
     if flowershift_now then
         local energy_to_dump = energy.current + (flower_end + 1 - query_time) * 10
         flowershift_now = (
-            flower_end + 1.0 + energy_to_dump / 42 < query_time + target.time_to_die
+            floor(flower_end + 1.0 + energy_to_dump / 42) < query_time + target.time_to_die
         )
     end
 
@@ -398,6 +404,7 @@ spec:RegisterStateExpr("execute_rotation", function()
 
     local excess_e = energy.current - floating_energy
     local time_to_next_action = 0
+    local powerbear_now = false
     if not buff.cat_form.up and flowerweaving_enabled then
         if flowershift_now then
             do_gift_of_the_wild = true
@@ -415,6 +422,81 @@ spec:RegisterStateExpr("execute_rotation", function()
             or rip_refresh_pending and debuff.rip.remains > 4.5
             or buff.berserk.up
         )
+
+        if powerbear_enabled then
+            powerbear_now = not shift_now and rage.current < 10
+        else
+            shift_now = shift_now or rage.current < 10
+        end
+
+        local build_lacerate = (
+            not debuff.lacerate.up or debuff.lacerate.stacks < 5
+        )
+        local maintain_lacerate = not build_lacerate and (
+            debuff.lacerate.remains <= 8
+            and (rage.current < 38 or shift_next)
+            and debuff.lacerate.remains < target.time_to_die
+        )
+        local lacerate_now = (
+            bearweaving_lacerate_enabled
+            and (build_lacerate or maintain_lacerate)
+        )
+        local emergency_lacerate = (
+            bearweaving_lacerate_enabled and debuff.lacerate.up
+            and debuff.lacerate.remains < 3.0 + 2 * latency
+            and debuff.lacerate.remains < target.time_to_die
+        )
+
+        if not bearweaving_lacerate_enabled or not lacerate_now then
+            shift_now = shift_now or buff.clearcasting.up
+        end
+
+        if not shift_now then
+            local energy_to_dump = energy.current + 30 + 10 * latency
+            local time_to_dump = floor(3 + latency + energy_to_dump / 42)
+            shift_now = time_to_dump >= target.time_to_die
+        end
+
+        if emergency_lacerate and rage.current >= 13 then
+            do_lacerate = true
+            return
+        elseif shift_now then
+            local projected_delay = mainhand_remains + 2 * latency
+            local rip_conflict = (
+                rip_refresh_pending and
+                debuff.rip.remains < projected_delay + 1.5
+            )
+            local next_cat_swing = latency + mainhand_remains / 2.5
+            local can_delay_shift = (
+                swingresetoptimization_enabled
+                and energy.current + 10 + projected_delay <= furor_cap
+                and not rip_conflict
+                and mainhand_remains < next_cat_swing
+            )
+
+            if can_delay_shift then
+                time_to_next_action = mainhand_remains
+            else
+                ready_to_shift = true
+            end
+        elseif powerbear_now then
+            do_cat_form, do_bear_form = player_shift(query_time, true)
+            return
+        elseif lacerate_now and rage.current >= 13 then
+            do_lacerate = true
+            return
+        elseif rage.current >= 15 and cooldown.mangle_bear.up then
+            do_mangle_bear = true
+            return
+        elseif rage.current >= 13 then
+            do_lacerate = true
+            return
+        else
+            time_to_next_action = mainhand_remains
+        end
+    elseif emergency_bearweave then
+        ready_to_shift = true
+    elseif berserk_now
     end
 end)
 

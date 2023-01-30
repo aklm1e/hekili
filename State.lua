@@ -56,6 +56,7 @@ state.resetType = "heavy"
 state.encounterID = 0
 state.encounterName = "None"
 state.encounterDifficulty = 0
+state.encounterStart = 0
 
 state.aggro = false
 state.tanking = false

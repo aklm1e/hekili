@@ -18,6 +18,9 @@ spec:RegisterGear( "tier8", 46260, 46262, 46265, 46267, 46269, 46158, 46161, 461
 spec:RegisterGear( "tier9", 48799, 48800, 48801, 48802, 48803, 48212, 48211, 48210, 48209, 48208 )
 spec:RegisterGear( "tier10", 51140, 51142, 51143, 51144, 51141, 51299, 51297, 51296, 51295, 51298 )
 
+-- Berserk tracker
+local encounter_berserk_count = 0
+
 -- Glyph of Shred helper
 local tracked_rips = {}
 Hekili.TR = tracked_rips;
@@ -87,6 +90,11 @@ spec:RegisterCombatLogEvent( function( _, subtype, _, sourceGUID, sourceName, _,
             local rip = FindUnitDebuffByID( "target", 49800 )
             if rip and spellID == 48572 then
                 RipShred( destGUID )
+            end
+
+            -- Track berserk usage
+            if state.encounterDifficulty > 0 and spellID == 50334 then
+                encounter_berserk_count = encounter_berserk_count + 1
             end
         end
 
@@ -166,6 +174,7 @@ spec:RegisterStateFunction("set_last_finisher_cp", function(val)
     lastfinishercp = val
 end)
 
+local last_seen_encounterDifficulty = 0
 local predatorsswiftness_spell_assigned = false
 local rip_cp = 5 -- TODO: Implement rip CP toggle
 local bite_cp = 5 -- TODO: Implement bite CP toggle
@@ -191,7 +200,9 @@ spec:RegisterHook( "reset_precast", function()
     end
 
     -- Reset NerdDruid vars
-    
+    if last_seen_encounterDifficulty > 0 and state.encounterDifficulty == 0 then
+        encounter_berserk_count = 0
+    end
 end )
 
 spec:RegisterStateFunction("init_rotation", function()
@@ -261,8 +272,185 @@ spec:RegisterStateExpr("execute_rotation", function()
     local berserk_now = (
         cooldown.berserk.up and not wait_for_tf
     )
+    -- TODO: End of fight berserk optimization
 
-    -- TODO: Berserk tracker
+    local roar_now = combo_points.current > 1 and (
+        buff.savage_roar.down or clip_roar()
+    )
+
+    local pending_actions = {}
+    local rip_refresh_pending = false
+
+    if debuff.rip.up and (debuff.rip.remains < target.time_to_die - end_thresh)
+        local rip_cost = (
+            berserk_expected_at(query_time, query_time + debuff.rip.remains)
+                and 15
+                or 30
+        )  
+
+        pending_actions[query_time + debuff.rip.remains] = rip_cost
+        rip_refresh_pending = true
+    end
+    if debuff.rake.up and (debuff.rake.remains < target.time_to_die - 9)
+        local rake_cost = (
+            berserk_expected_at(query_time, query_time + debuff.rake.remains)
+                and 17.5
+                or 35
+        )
+
+        pending_actions[query_time + debuff.rake.remains] = rake_cost
+    end
+    if debuff.mangle.up and (debuff.mangle.remains < target.time_to_die - 1)
+        local mangle_cost = (
+            berserk_expected_at(query_time, query_time + debuff.mangle.remains)
+                and 20
+                or 40
+        )
+
+        pending_actions[query_time + debuff.mangle.remains] = mangle_cost
+    end
+    if buff.savage_roar.up then
+        local roar_cost = (
+            berserk_expected_at(query_time, query_time + buff.savage_roar.remains)
+                and 12.5
+                or 25
+        )
+    end
+
+    local weave_energy = furor_cap - 30 - 20 * latency
+    if talent.furor.rank > 3 then
+        weave_energy = weave_energy - (
+            bearweaving_lacerate_enabled and debuff.lacerate.down
+                and 30
+                or 15
+        )
+    end
+
+    local weave_end = query_time + 4.5 * 2 * latency
+    local bearweave_now = (
+        bearweaving_enabled and energy.current < weave_energy
+        and buff.clearcasting.down
+        and (not rip_refresh_pending or query_time + debuff.rip.remains >= weave_end)
+        and not buff.berserk.up
+    )
+
+    if bearweave_now and not bearweaving_lacerate_enabled then
+        bearweave_now = not tf_expected_before(query_time, weave_end)
+    end
+
+    if bearweave_now then
+        local energy_to_dump = energy.current + (weave_end - query_time) * 10
+        bearweave_now = (
+            weave_end + energy_to_dump / 42 < target.time_to_die
+        )
+    end
+
+    local emergency_bearweave = (
+        bearweaving_enabled and bearweaving_lacerate_enabled
+        and debuff.lacerate.up
+        and (query_time + debuff.lacerate.end - query_time < 2.5 + latency)
+        and debuff.lacerate.remains < target.time_to_die
+        and not buff.berserk.up
+    )
+
+    local flower_end = query_time + action.gift_of_the_wild.gcd + 1.5 + 2 * latency
+    local flowershift_now = (
+        flowerweaving_enabled and energy.current <= flowerweaving_energy
+        and not buff.clearcasting.up
+        and (not rip_refresh_pending or query_time + debuff.rip.remains >= flower_end)
+        and not buff.berserk.up
+        and not tf_expected_before(query_time, flower_end)
+    )
+
+    if flowershift_now then
+        local energy_to_dump = energy.current + (flower_end + 1 - query_time) * 10
+        flowershift_now = (
+            flower_end + 1.0 + energy_to_dump / 42 < query_time + target.time_to_die
+        )
+    end
+
+    local floating_energy = 0
+    local previous_time = query_time
+    local tf_pending = false
+    local pending_keys = {}
+    for k in pairs(pending_actions) do table.insert(pending_keys, k) end
+    table.sort(pending_keys)
+    for _, k in ipairs(pending_keys) do 
+        local refresh_time = k
+        local refresh_cost = pending_actions[k]
+        local delta_t = refresh_time - previous_time
+
+        if not tf_pending then
+            tf_pending = tf_expected_before(query_time, refresh_time)
+
+            if tf_pending then
+                refresh_cost = refresh_cost - 60
+            end
+        end
+
+        if delta_t < refresh_cost / 10 then
+            floating_energy = floating_energy + refresh_cost - 10 * delta_t
+            previous_time = refresh_time
+        else
+            previous_time = previous_time + refresh_cost / 10
+        end
+    end
+
+    local excess_e = energy.current - floating_energy
+    local time_to_next_action = 0
+    if not buff.cat_form.up and flowerweaving_enabled then
+        if flowershift_now then
+            do_gift_of_the_wild = true
+        else
+            ready_to_shift = true
+        end
+    elseif not buff.cat_form.up then
+        local shift_now = (
+            energy.current + 15 + 10 * latency > furor_cap
+            or rip_refresh_pending and debuff.rip.remains > 3
+            or buff.berserk.up
+        )
+        local shift_next = (
+            energy.current + 30 + 10 * latency > furor_cap
+            or rip_refresh_pending and debuff.rip.remains > 4.5
+            or buff.berserk.up
+        )
+    end
+end)
+
+spec:RegisterStateFunction("berserk_expected_at", function(current_time, future_time)
+    if buff.berserk.up then
+        return (
+            future_time - current_time < buff.berserk.remains
+            or future_time > current_time + cooldown.berserk.remains
+        )
+    end
+    if cooldown.berserk.remains > 0 then
+        return future_time > current_time + cooldown.berserk.remains
+    end
+    return future_time > current_time + cooldown.tigers_fury.remains
+end)
+
+spec:RegisterStateFunction("tf_expected_before", function(current_time, future_time)
+    if cooldown.tigers_fury.remains > 0 then
+        return current_time + cooldown.tigers_fury.remains < future_time
+    end
+    if buff.berserk.up then
+        return current_time + buff.berserk.remains < future_time
+    end
+    return true
+end)
+
+spec:RegisterStateFunction("clip_roar", function()
+    if debuff.rip.down or target.time_to_die - debuff.rip.remains < 10 then
+        return false
+    end
+
+    if buff.savage_roar.remains > rip_maxremains then
+        return false
+    end
+
+    return 14 + ((combo_points.current-1)*5) >= rip_maxremains + min_roar_offset
 end)
 
 spec:RegisterStateFunction("calculate_ability_dpe", function()

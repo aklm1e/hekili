@@ -491,6 +491,7 @@ RegisterEvent( "ENCOUNTER_START", function ( _, id, name, difficulty, groupSize 
     state.encounterName = name
     state.encounterDifficulty = difficulty
     state.encounterSize = groupSize
+    state.encounterStart = GetTime()
 end )
 
 RegisterEvent( "ENCOUNTER_END", function ()
@@ -498,6 +499,7 @@ RegisterEvent( "ENCOUNTER_END", function ()
     state.encounterName = "None"
     state.encounterDifficulty = 0
     state.encounterSize = 0
+    state.encounterStart = 0
 end )
 
 
